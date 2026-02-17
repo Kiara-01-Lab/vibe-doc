@@ -1,0 +1,90 @@
+name: "AutoDoc - Self-Documenting Repos"
+description: "Your project documents itself every time you push. Zero config, zero effort."
+author: "Kiara Inc."
+
+branding:
+  icon: "book-open"
+  color: "blue"
+
+inputs:
+  anthropic_api_key:
+    description: "Anthropic API key for Claude"
+    required: true
+  output_dir:
+    description: "Directory to write generated docs"
+    required: false
+    default: "docs/autodoc"
+  language:
+    description: "Documentation language (en, ja, or both)"
+    required: false
+    default: "en"
+  include_api_docs:
+    description: "Generate API documentation"
+    required: false
+    default: "true"
+  include_architecture:
+    description: "Generate architecture overview"
+    required: false
+    default: "true"
+  include_onboarding:
+    description: "Generate onboarding guide"
+    required: false
+    default: "true"
+  include_decisions:
+    description: "Generate decision log from git history"
+    required: false
+    default: "true"
+  max_files:
+    description: "Max source files to analyze (to control API costs)"
+    required: false
+    default: "50"
+  file_extensions:
+    description: "Comma-separated file extensions to analyze"
+    required: false
+    default: ".py,.ts,.tsx,.js,.jsx,.go,.rs,.java,.rb,.php"
+
+outputs:
+  docs_generated:
+    description: "List of generated documentation files"
+  files_analyzed:
+    description: "Number of source files analyzed"
+
+runs:
+  using: "composite"
+  steps:
+    - name: Set up Python
+      uses: actions/setup-python@v5
+      with:
+        python-version: "3.11"
+
+    - name: Install dependencies
+      shell: bash
+      run: |
+        pip install anthropic pyyaml
+
+    - name: Run AutoDoc
+      shell: bash
+      env:
+        ANTHROPIC_API_KEY: ${{ inputs.anthropic_api_key }}
+        AUTODOC_OUTPUT_DIR: ${{ inputs.output_dir }}
+        AUTODOC_LANGUAGE: ${{ inputs.language }}
+        AUTODOC_INCLUDE_API: ${{ inputs.include_api_docs }}
+        AUTODOC_INCLUDE_ARCH: ${{ inputs.include_architecture }}
+        AUTODOC_INCLUDE_ONBOARD: ${{ inputs.include_onboarding }}
+        AUTODOC_INCLUDE_DECISIONS: ${{ inputs.include_decisions }}
+        AUTODOC_MAX_FILES: ${{ inputs.max_files }}
+        AUTODOC_FILE_EXTENSIONS: ${{ inputs.file_extensions }}
+      run: python ${{ github.action_path }}/src/autodoc.py
+
+    - name: Commit generated docs
+      shell: bash
+      run: |
+        git config --local user.email "autodoc[bot]@users.noreply.github.com"
+        git config --local user.name "AutoDoc Bot"
+        git add ${{ inputs.output_dir }}
+        if git diff --cached --quiet; then
+          echo "No documentation changes detected."
+        else
+          git commit -m "docs: auto-update documentation [autodoc]"
+          git push
+        fi

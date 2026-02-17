@@ -1,0 +1,53 @@
+# .github/workflows/autodoc.yml
+#
+# AutoDoc - Your project documents itself every time you push.
+# Copy this file to your repo's .github/workflows/ directory.
+#
+# Setup:
+#   1. Add your Anthropic API key as a repository secret named ANTHROPIC_API_KEY
+#      (Settings → Secrets → Actions → New repository secret)
+#   2. That's it. Push to main and docs appear automatically.
+
+name: AutoDoc
+
+on:
+  push:
+    branches: [main, master]
+    # Don't trigger on doc-only commits (prevents infinite loop)
+    paths-ignore:
+      - "docs/autodoc/**"
+
+  # Allow manual trigger from GitHub UI
+  workflow_dispatch:
+
+# Prevent concurrent runs
+concurrency:
+  group: autodoc-${{ github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: write
+
+jobs:
+  generate-docs:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 50  # Need git history for decision log
+
+      - name: Run AutoDoc
+        uses: kiara-inc/autodoc-action@v1
+        with:
+          anthropic_api_key: ${{ secrets.ANTHROPIC_API_KEY }}
+
+          # Optional settings (these are the defaults):
+          # output_dir: "docs/autodoc"
+          # language: "en"              # "en", "ja", or "both"
+          # include_api_docs: "true"
+          # include_architecture: "true"
+          # include_onboarding: "true"
+          # include_decisions: "true"
+          # max_files: "50"
+          # file_extensions: ".py,.ts,.tsx,.js,.jsx,.go,.rs,.java,.rb,.php"
