@@ -1,4 +1,4 @@
-# 📖 AutoDoc
+# 📖 VibeDoc
 
 **Your project documents itself every time you push.**
 
