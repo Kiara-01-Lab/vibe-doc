@@ -7,9 +7,12 @@ Copyright (c) 2026 Kiara Inc. | MIT License
 """
 
 import os
+import re
 import sys
 import json
 import subprocess
+import urllib.request
+import urllib.error
 from pathlib import Path
 from typing import Optional
 
@@ -25,12 +28,21 @@ INCLUDE_API = os.environ.get("AUTODOC_INCLUDE_API", "true") == "true"
 INCLUDE_ARCH = os.environ.get("AUTODOC_INCLUDE_ARCH", "true") == "true"
 INCLUDE_ONBOARD = os.environ.get("AUTODOC_INCLUDE_ONBOARD", "true") == "true"
 INCLUDE_DECISIONS = os.environ.get("AUTODOC_INCLUDE_DECISIONS", "true") == "true"
+INCLUDE_CHANGELOG = os.environ.get("AUTODOC_INCLUDE_CHANGELOG", "true") == "true"
+DIFF_MODE = os.environ.get("AUTODOC_DIFF_MODE", "true") == "true"
 MAX_FILES = int(os.environ.get("AUTODOC_MAX_FILES", "50"))
 FILE_EXTENSIONS = os.environ.get(
     "AUTODOC_FILE_EXTENSIONS", ".py,.ts,.tsx,.js,.jsx,.go,.rs,.java,.rb,.php"
 ).split(",")
+WEBHOOK_URL = os.environ.get("AUTODOC_WEBHOOK_URL", "")
 
-MODEL = "claude-sonnet-4-20250514"
+# GitHub context (auto-set in GitHub Actions)
+GITHUB_TOKEN = os.environ.get("GITHUB_TOKEN", "")
+GITHUB_REPOSITORY = os.environ.get("GITHUB_REPOSITORY", "")
+GITHUB_EVENT_NAME = os.environ.get("GITHUB_EVENT_NAME", "")
+GITHUB_REF = os.environ.get("GITHUB_REF", "")
+
+MODEL = "claude-sonnet-4-5-20250929"
 MAX_TOKENS = 4096
 
 # ---------------------------------------------------------------------------
@@ -49,6 +61,49 @@ def get_repo_root() -> Path:
         print("Error: Not a git repository.")
         sys.exit(1)
     return Path(result.stdout.strip())
+
+
+def get_changed_files(repo_root: Path) -> set[str]:
+    """Get files changed in the most recent commit."""
+    result = subprocess.run(
+        ["git", "diff", "HEAD~1", "--name-only"],
+        capture_output=True,
+        text=True,
+        cwd=repo_root,
+    )
+    if result.returncode != 0 or not result.stdout.strip():
+        # First commit or error — treat as fully changed (regenerate all)
+        return set()
+    return set(result.stdout.strip().splitlines())
+
+
+def should_regenerate(doc_type: str, changed_files: set[str]) -> bool:
+    """
+    Determine if a doc type needs regeneration based on changed files.
+    Empty changed_files means first commit or diff unavailable — regenerate all.
+    """
+    if not DIFF_MODE or not changed_files:
+        return True
+
+    source_exts = tuple(ext.strip() for ext in FILE_EXTENSIONS)
+    config_names = {
+        "package.json", "pyproject.toml", "setup.py", "setup.cfg",
+        "Cargo.toml", "go.mod", "pom.xml", "build.gradle",
+        "Makefile", "Dockerfile", "docker-compose.yml", ".env.example",
+    }
+
+    has_source_changes = any(f.endswith(source_exts) for f in changed_files)
+    has_config_changes = any(Path(f).name in config_names for f in changed_files)
+
+    if doc_type == "architecture":
+        return has_source_changes or has_config_changes
+    elif doc_type == "api":
+        return has_source_changes
+    elif doc_type == "onboarding":
+        return has_source_changes or has_config_changes
+    elif doc_type in ("decisions", "changelog"):
+        return True  # Always based on git history, cheap to regenerate
+    return True
 
 
 def scan_source_files(repo_root: Path) -> list[dict]:
@@ -122,6 +177,22 @@ def get_git_log(repo_root: Path, max_commits: int = 50) -> str:
     return result.stdout if result.returncode == 0 else ""
 
 
+def get_full_git_log(repo_root: Path, max_commits: int = 100) -> str:
+    """Get git log with full conventional commit detail for changelog generation."""
+    result = subprocess.run(
+        [
+            "git", "log",
+            f"--max-count={max_commits}",
+            "--pretty=format:%h | %ad | %an | %s%n%b---",
+            "--date=short",
+        ],
+        capture_output=True,
+        text=True,
+        cwd=repo_root,
+    )
+    return result.stdout if result.returncode == 0 else ""
+
+
 def get_directory_tree(repo_root: Path, max_depth: int = 3) -> str:
     """Generate a directory tree string."""
     skip_dirs = {
@@ -147,7 +218,7 @@ def get_directory_tree(repo_root: Path, max_depth: int = 3) -> str:
 
     lines.append(repo_root.name + "/")
     _walk(repo_root, "", 1)
-    return "\n".join(lines[:200])  # cap output
+    return "\n".join(lines[:200])
 
 
 # ---------------------------------------------------------------------------
@@ -187,9 +258,7 @@ LANG_INSTRUCTION = {
 }
 
 
-def generate_architecture(
-    tree: str, configs: list[dict], sources: list[dict]
-) -> str:
+def generate_architecture(tree: str, configs: list[dict], sources: list[dict]) -> str:
     """Generate ARCHITECTURE.md"""
     lang = LANG_INSTRUCTION.get(LANGUAGE, LANG_INSTRUCTION["en"])
 
@@ -275,9 +344,7 @@ If no clear API is found, document the main entry points and public interfaces.
     return call_claude(system, user)
 
 
-def generate_onboarding(
-    tree: str, configs: list[dict], sources: list[dict]
-) -> str:
+def generate_onboarding(tree: str, configs: list[dict], sources: list[dict]) -> str:
     """Generate ONBOARDING.md"""
     lang = LANG_INSTRUCTION.get(LANGUAGE, LANG_INSTRUCTION["en"])
 
@@ -349,7 +416,7 @@ Generate a DECISIONS.md with:
 
 1. **Decision Log** - Table with columns:
    | Date | Decision | Reasoning (inferred) | Evidence |
-   
+
    Include decisions about:
    - Technology choices (why this language/framework?)
    - Architecture patterns (why this structure?)
@@ -364,6 +431,130 @@ Generate a DECISIONS.md with:
 Only include decisions you can reasonably infer. Mark uncertain inferences with ⚠️.
 """
     return call_claude(system, user)
+
+
+def generate_changelog(full_git_log: str) -> str:
+    """Generate CHANGELOG.md from git history using conventional commits."""
+    lang = LANG_INSTRUCTION.get(LANGUAGE, LANG_INSTRUCTION["en"])
+
+    system = f"""You are generating a CHANGELOG.md from git history.
+{lang}
+Write in Markdown. Follow Keep a Changelog format (https://keepachangelog.com).
+Group changes by type: Added, Changed, Fixed, Removed, Security, Deprecated.
+Parse conventional commits (feat:, fix:, chore:, docs:, refactor:, test:, perf:, etc.).
+Be concise — one line per change. Skip trivial chore/ci commits."""
+
+    user = f"""Generate a CHANGELOG.md from this git history.
+
+## Git Log
+```
+{full_git_log}
+```
+
+## Required Format
+
+```
+# Changelog
+
+All notable changes to this project will be documented here.
+Format based on [Keep a Changelog](https://keepachangelog.com).
+
+## [Unreleased]
+### Added
+- ...
+### Fixed
+- ...
+
+## [YYYY-MM-DD]
+### Added / Changed / Fixed / Removed
+- ...
+```
+
+Group commits into time periods using dates as version markers if no semver tags exist.
+Focus on user-facing changes. Each entry should be one clear sentence.
+"""
+    return call_claude(system, user)
+
+
+# ---------------------------------------------------------------------------
+# PR Comment
+# ---------------------------------------------------------------------------
+
+
+def post_pr_comment(files_generated: list[str], files_skipped: list[str]) -> None:
+    """Post a summary comment to the PR if running in a GitHub Actions PR context."""
+    if not GITHUB_TOKEN or not GITHUB_REPOSITORY:
+        return
+    if GITHUB_EVENT_NAME != "pull_request":
+        return
+
+    match = re.match(r"refs/pull/(\d+)/", GITHUB_REF)
+    if not match:
+        return
+    pr_number = match.group(1)
+
+    updated_list = "\n".join(f"- `{OUTPUT_DIR}/{f}`" for f in files_generated) or "_(none)_"
+    body = f"### \U0001f4d6 AutoDoc updated documentation\n\n**Updated ({len(files_generated)} files):**\n{updated_list}\n"
+
+    if files_skipped:
+        skipped_list = "\n".join(
+            f"- `{OUTPUT_DIR}/{f}` _(no relevant changes detected)_" for f in files_skipped
+        )
+        body += f"\n**Skipped (diff mode):**\n{skipped_list}\n"
+
+    body += f"\n> Generated by [AutoDoc](https://github.com/kiara-inc/autodoc-action)"
+
+    url = f"https://api.github.com/repos/{GITHUB_REPOSITORY}/issues/{pr_number}/comments"
+    payload = json.dumps({"body": body}).encode("utf-8")
+    req = urllib.request.Request(
+        url,
+        data=payload,
+        headers={
+            "Authorization": f"Bearer {GITHUB_TOKEN}",
+            "Content-Type": "application/json",
+            "Accept": "application/vnd.github+json",
+            "X-GitHub-Api-Version": "2022-11-28",
+        },
+        method="POST",
+    )
+    try:
+        with urllib.request.urlopen(req) as resp:
+            print(f"  PR comment posted (HTTP {resp.status})")
+    except urllib.error.HTTPError as e:
+        print(f"  Failed to post PR comment: HTTP {e.code} — {e.reason}")
+
+
+# ---------------------------------------------------------------------------
+# Webhook Notification
+# ---------------------------------------------------------------------------
+
+
+def send_webhook(files_generated: list[str], files_skipped: list[str]) -> None:
+    """Send Slack/Discord webhook notification when docs are updated."""
+    if not WEBHOOK_URL or not files_generated:
+        return
+
+    repo_label = GITHUB_REPOSITORY or "your repo"
+    updated = ", ".join(f"`{f}`" for f in files_generated)
+    text = f"\U0001f4d6 *AutoDoc* updated docs in `{repo_label}`\n*Updated:* {updated}"
+
+    if files_skipped:
+        skipped = ", ".join(f"`{f}`" for f in files_skipped)
+        text += f"\n*Skipped (no changes):* {skipped}"
+
+    # Slack format — also accepted by Discord incoming webhooks
+    payload = json.dumps({"text": text}).encode("utf-8")
+    req = urllib.request.Request(
+        WEBHOOK_URL,
+        data=payload,
+        headers={"Content-Type": "application/json"},
+        method="POST",
+    )
+    try:
+        with urllib.request.urlopen(req) as resp:
+            print(f"  Webhook sent (HTTP {resp.status})")
+    except urllib.error.HTTPError as e:
+        print(f"  Webhook failed: HTTP {e.code} — {e.reason}")
 
 
 # ---------------------------------------------------------------------------
@@ -382,55 +573,81 @@ def main():
     output_path.mkdir(parents=True, exist_ok=True)
 
     # Scan
-    print("\n📂 Scanning repository...")
+    print("\n  Scanning repository...")
     tree = get_directory_tree(repo_root)
     configs = scan_config_files(repo_root)
     sources = scan_source_files(repo_root)
     git_log = get_git_log(repo_root)
+    full_git_log = get_full_git_log(repo_root)
 
     print(f"  Found {len(sources)} source files, {len(configs)} config files")
     print(f"  Git history: {len(git_log.splitlines())} recent commits")
 
-    files_generated = []
+    # Diff mode
+    changed_files: set[str] = set()
+    if DIFF_MODE:
+        changed_files = get_changed_files(repo_root)
+        if changed_files:
+            print(f"  Diff mode: {len(changed_files)} files changed since last commit")
+        else:
+            print("  Diff mode: first commit or no prior history — regenerating all docs")
 
-    # Generate docs
+    files_generated: list[str] = []
+    files_skipped: list[str] = []
+
+    def run_or_skip(doc_type: str, filename: str, generate_fn, *args):
+        if should_regenerate(doc_type, changed_files):
+            content = generate_fn(*args)
+            (output_path / filename).write_text(content, encoding="utf-8")
+            files_generated.append(filename)
+            print(f"  Done")
+        else:
+            files_skipped.append(filename)
+            print(f"  Skipped (no relevant changes)")
+
     if INCLUDE_ARCH:
-        print("\n🏗️  Generating ARCHITECTURE.md ...")
-        arch = generate_architecture(tree, configs, sources)
-        (output_path / "ARCHITECTURE.md").write_text(arch, encoding="utf-8")
-        files_generated.append("ARCHITECTURE.md")
-        print("  ✅ Done")
+        print("\n  Generating ARCHITECTURE.md ...")
+        run_or_skip("architecture", "ARCHITECTURE.md", generate_architecture, tree, configs, sources)
 
     if INCLUDE_API:
-        print("\n📡 Generating API.md ...")
-        api = generate_api_docs(sources, configs)
-        (output_path / "API.md").write_text(api, encoding="utf-8")
-        files_generated.append("API.md")
-        print("  ✅ Done")
+        print("\n  Generating API.md ...")
+        run_or_skip("api", "API.md", generate_api_docs, sources, configs)
 
     if INCLUDE_ONBOARD:
-        print("\n👋 Generating ONBOARDING.md ...")
-        onboard = generate_onboarding(tree, configs, sources)
-        (output_path / "ONBOARDING.md").write_text(onboard, encoding="utf-8")
-        files_generated.append("ONBOARDING.md")
-        print("  ✅ Done")
+        print("\n  Generating ONBOARDING.md ...")
+        run_or_skip("onboarding", "ONBOARDING.md", generate_onboarding, tree, configs, sources)
 
     if INCLUDE_DECISIONS:
-        print("\n🧠 Generating DECISIONS.md ...")
-        decisions = generate_decisions(git_log, configs, sources)
-        (output_path / "DECISIONS.md").write_text(decisions, encoding="utf-8")
-        files_generated.append("DECISIONS.md")
-        print("  ✅ Done")
+        print("\n  Generating DECISIONS.md ...")
+        run_or_skip("decisions", "DECISIONS.md", generate_decisions, git_log, configs, sources)
+
+    if INCLUDE_CHANGELOG:
+        print("\n  Generating CHANGELOG.md ...")
+        run_or_skip("changelog", "CHANGELOG.md", generate_changelog, full_git_log)
+
+    # Notifications
+    if GITHUB_EVENT_NAME == "pull_request":
+        print("\n  Posting PR comment...")
+        post_pr_comment(files_generated, files_skipped)
+
+    if WEBHOOK_URL:
+        print("\n  Sending webhook notification...")
+        send_webhook(files_generated, files_skipped)
 
     # GitHub Actions outputs
     github_output = os.environ.get("GITHUB_OUTPUT")
     if github_output:
         with open(github_output, "a") as f:
             f.write(f"docs_generated={','.join(files_generated)}\n")
+            f.write(f"docs_skipped={','.join(files_skipped)}\n")
             f.write(f"files_analyzed={len(sources)}\n")
 
-    print(f"\n🎉 Generated {len(files_generated)} docs in {OUTPUT_DIR}/")
-    print(f"   Files: {', '.join(files_generated)}")
+    total = len(files_generated) + len(files_skipped)
+    print(f"\n  Generated {len(files_generated)}/{total} docs in {OUTPUT_DIR}/")
+    if files_generated:
+        print(f"  Updated:  {', '.join(files_generated)}")
+    if files_skipped:
+        print(f"  Skipped:  {', '.join(files_skipped)}")
     print("=" * 60)
 
 

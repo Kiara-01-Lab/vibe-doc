@@ -34,6 +34,14 @@ inputs:
     description: "Generate decision log from git history"
     required: false
     default: "true"
+  include_changelog:
+    description: "Generate CHANGELOG.md from conventional commits"
+    required: false
+    default: "true"
+  diff_mode:
+    description: "Only regenerate docs for changed files (saves API cost)"
+    required: false
+    default: "true"
   max_files:
     description: "Max source files to analyze (to control API costs)"
     required: false
@@ -42,10 +50,24 @@ inputs:
     description: "Comma-separated file extensions to analyze"
     required: false
     default: ".py,.ts,.tsx,.js,.jsx,.go,.rs,.java,.rb,.php"
+  webhook_url:
+    description: "Slack or Discord webhook URL for doc update notifications"
+    required: false
+    default: ""
+  commit_strategy:
+    description: "How to commit docs: 'direct' (commit to current branch) or 'pr' (open a pull request)"
+    required: false
+    default: "direct"
+  github_token:
+    description: "GitHub token for PR creation and PR comments (defaults to github.token)"
+    required: false
+    default: ""
 
 outputs:
   docs_generated:
-    description: "List of generated documentation files"
+    description: "Comma-separated list of generated documentation files"
+  docs_skipped:
+    description: "Comma-separated list of skipped files (diff mode, no changes)"
   files_analyzed:
     description: "Number of source files analyzed"
 
@@ -59,8 +81,7 @@ runs:
 
     - name: Install dependencies
       shell: bash
-      run: |
-        pip install anthropic pyyaml
+      run: pip install anthropic
 
     - name: Run AutoDoc
       shell: bash
@@ -72,18 +93,41 @@ runs:
         AUTODOC_INCLUDE_ARCH: ${{ inputs.include_architecture }}
         AUTODOC_INCLUDE_ONBOARD: ${{ inputs.include_onboarding }}
         AUTODOC_INCLUDE_DECISIONS: ${{ inputs.include_decisions }}
+        AUTODOC_INCLUDE_CHANGELOG: ${{ inputs.include_changelog }}
+        AUTODOC_DIFF_MODE: ${{ inputs.diff_mode }}
         AUTODOC_MAX_FILES: ${{ inputs.max_files }}
         AUTODOC_FILE_EXTENSIONS: ${{ inputs.file_extensions }}
+        AUTODOC_WEBHOOK_URL: ${{ inputs.webhook_url }}
+        GITHUB_TOKEN: ${{ inputs.github_token || github.token }}
+        GITHUB_REPOSITORY: ${{ github.repository }}
+        GITHUB_EVENT_NAME: ${{ github.event_name }}
+        GITHUB_REF: ${{ github.ref }}
       run: python ${{ github.action_path }}/src/autodoc.py
 
-    - name: Commit generated docs
+    - name: Commit or PR generated docs
       shell: bash
+      env:
+        GH_TOKEN: ${{ inputs.github_token || github.token }}
+        COMMIT_STRATEGY: ${{ inputs.commit_strategy }}
+        OUTPUT_DIR: ${{ inputs.output_dir }}
       run: |
         git config --local user.email "autodoc[bot]@users.noreply.github.com"
         git config --local user.name "AutoDoc Bot"
-        git add ${{ inputs.output_dir }}
+        git add "$OUTPUT_DIR"
+
         if git diff --cached --quiet; then
-          echo "No documentation changes detected."
+          echo "No documentation changes to commit."
+        elif [ "$COMMIT_STRATEGY" = "pr" ]; then
+          BRANCH="autodoc/update-$(date +%Y%m%d-%H%M%S)"
+          git checkout -b "$BRANCH"
+          git commit -m "docs: auto-update documentation [autodoc]"
+          git push origin "$BRANCH"
+          gh pr create \
+            --title "docs: auto-update documentation" \
+            --body "AutoDoc detected changes and regenerated documentation automatically." \
+            --base "${{ github.ref_name }}" \
+            --head "$BRANCH" \
+            --label "documentation" || echo "PR already open or label missing — skipping."
         else
           git commit -m "docs: auto-update documentation [autodoc]"
           git push

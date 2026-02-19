@@ -1,0 +1,83 @@
+# examples/gitlab-ci.yml
+#
+# AutoDoc for GitLab CI
+# Your project documents itself every time you push.
+#
+# Setup:
+#   1. Add your Anthropic API key as a CI/CD variable named ANTHROPIC_API_KEY
+#      (Settings → CI/CD → Variables → Add variable)
+#   2. Optionally add SLACK_WEBHOOK_URL for notifications
+#   3. Copy this file to your repo as .gitlab-ci.yml (or include it in an existing one)
+
+stages:
+  - docs
+
+autodoc:
+  stage: docs
+  image: python:3.11-slim
+
+  # Only run on pushes to the default branch, not on doc-only commits
+  rules:
+    - if: $CI_COMMIT_BRANCH == $CI_DEFAULT_BRANCH
+      changes:
+        - "**/*.py"
+        - "**/*.ts"
+        - "**/*.tsx"
+        - "**/*.js"
+        - "**/*.jsx"
+        - "**/*.go"
+        - "**/*.rs"
+        - "**/*.java"
+        - "**/*.rb"
+        - "**/*.php"
+        - "package.json"
+        - "pyproject.toml"
+        - "Dockerfile"
+        - "docker-compose.yml"
+        - "Makefile"
+      when: always
+    - when: never
+
+  variables:
+    AUTODOC_OUTPUT_DIR: "docs/autodoc"
+    AUTODOC_LANGUAGE: "en"           # "en", "ja", or "both"
+    AUTODOC_INCLUDE_API: "true"
+    AUTODOC_INCLUDE_ARCH: "true"
+    AUTODOC_INCLUDE_ONBOARD: "true"
+    AUTODOC_INCLUDE_DECISIONS: "true"
+    AUTODOC_INCLUDE_CHANGELOG: "true"
+    AUTODOC_DIFF_MODE: "true"
+    AUTODOC_MAX_FILES: "50"
+    AUTODOC_FILE_EXTENSIONS: ".py,.ts,.tsx,.js,.jsx,.go,.rs,.java,.rb,.php"
+    # AUTODOC_WEBHOOK_URL: set via CI/CD variable SLACK_WEBHOOK_URL
+    GIT_DEPTH: 50   # Needed for decision log and diff mode
+
+  before_script:
+    - pip install anthropic --quiet
+    - |
+      # Configure git for committing docs back
+      git config --global user.email "autodoc[bot]@noreply.gitlab.com"
+      git config --global user.name "AutoDoc Bot"
+      # Set remote URL with access token for push
+      git remote set-url origin "https://autodoc-bot:${AUTODOC_PUSH_TOKEN}@${CI_SERVER_HOST}/${CI_PROJECT_PATH}.git"
+
+  script:
+    - |
+      # Optionally pass webhook URL if set as CI variable
+      export AUTODOC_WEBHOOK_URL="${SLACK_WEBHOOK_URL:-}"
+      python src/autodoc.py
+
+    - |
+      # Commit generated docs back to the repo
+      git add "$AUTODOC_OUTPUT_DIR"
+      if git diff --cached --quiet; then
+        echo "No documentation changes detected."
+      else
+        git commit -m "docs: auto-update documentation [autodoc] [skip ci]"
+        git push origin HEAD:$CI_COMMIT_BRANCH
+      fi
+
+  artifacts:
+    paths:
+      - docs/autodoc/
+    expire_in: 30 days
