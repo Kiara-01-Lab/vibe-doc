@@ -38,7 +38,7 @@ jobs:
           fetch-depth: 50  # Need git history for decision log
 
       - name: Run AutoDoc
-        uses: kiara-inc/autodoc-action@v1
+        uses: Kiara-01-Lab/vibe-doc@v1.0.0
         with:
           anthropic_api_key: ${{ secrets.ANTHROPIC_API_KEY }}
 

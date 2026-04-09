@@ -1,6 +1,6 @@
 # 📖 VibeDoc
 
-[![AutoDoc](https://img.shields.io/badge/docs-autodoc-blue?logo=github)](https://github.com/kiara-inc/autodoc-action)
+[![AutoDoc](https://img.shields.io/badge/docs-autodoc-blue?logo=github)](https://github.com/Kiara-01-Lab/vibe-doc)
 [![License: MIT](https://img.shields.io/badge/license-MIT-green)](LICENSE)
 
 **Your project documents itself every time you push.**
@@ -45,7 +45,7 @@ jobs:
       - uses: actions/checkout@v4
         with:
           fetch-depth: 50
-      - uses: kiara-inc/autodoc-action@v1
+      - uses: Kiara-01-Lab/vibe-doc@v1.0.0
         with:
           anthropic_api_key: ${{ secrets.ANTHROPIC_API_KEY }}
 ```
@@ -75,7 +75,7 @@ Done. Your `docs/autodoc/` folder will appear with:
 All settings are optional. Defaults work for most projects.
 
 ```yaml
-- uses: kiara-inc/autodoc-action@v1
+- uses: Kiara-01-Lab/vibe-doc@v1.0.0
   with:
     anthropic_api_key: ${{ secrets.ANTHROPIC_API_KEY }}
 
@@ -280,7 +280,7 @@ If sanitization doesn't prevent errors (rare), try:
 
 Example:
 ```yaml
-- uses: kiara-inc/autodoc-action@v1
+- uses: Kiara-01-Lab/vibe-doc@v1.0.0
   with:
     anthropic_api_key: ${{ secrets.ANTHROPIC_API_KEY }}
     max_files: "25"
@@ -335,7 +335,7 @@ jobs:
       - uses: actions/checkout@v4
         with:
           fetch-depth: 50
-      - uses: kiara-inc/autodoc-action@v1
+      - uses: Kiara-01-Lab/vibe-doc@v1.0.0
         with:
           anthropic_api_key: ${{ secrets.ANTHROPIC_API_KEY }}
           language: "ja"  # 日本語ドキュメント
