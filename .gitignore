@@ -20,3 +20,10 @@ Thumbs.db
 
 # Generated docs (don't track test runs locally)
 docs/autodoc/
+
+# Session handoff notes
+HANDOFF.md
+
+# Internal files
+memo*.md
+index*.html

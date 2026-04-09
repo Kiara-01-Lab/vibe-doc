@@ -42,6 +42,10 @@ inputs:
     description: "Only regenerate docs for changed files (saves API cost)"
     required: false
     default: "true"
+  sanitize_content:
+    description: "Sanitize 40+ trigger words to prevent content filtering (kill→terminate, hack→workaround, etc.)"
+    required: false
+    default: "true"
   max_files:
     description: "Max source files to analyze (to control API costs)"
     required: false
@@ -95,6 +99,7 @@ runs:
         AUTODOC_INCLUDE_DECISIONS: ${{ inputs.include_decisions }}
         AUTODOC_INCLUDE_CHANGELOG: ${{ inputs.include_changelog }}
         AUTODOC_DIFF_MODE: ${{ inputs.diff_mode }}
+        AUTODOC_SANITIZE: ${{ inputs.sanitize_content }}
         AUTODOC_MAX_FILES: ${{ inputs.max_files }}
         AUTODOC_FILE_EXTENSIONS: ${{ inputs.file_extensions }}
         AUTODOC_WEBHOOK_URL: ${{ inputs.webhook_url }}
